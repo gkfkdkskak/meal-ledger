@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow">
+  <title>현장 식대장부</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f4f6f5;color:#21352e;font:16px/1.7 'Malgun Gothic',sans-serif}main{width:min(100%,460px);padding:36px;background:white;border:1px solid #dce5de;border-radius:16px}h1{font-size:26px;margin:0 0 12px}p{color:#62776a}a{display:block;margin-top:24px;padding:13px 18px;background:#197752;border-radius:8px;color:white;text-decoration:none;text-align:center;font-weight:bold}small{display:block;margin-top:20px;color:#738078}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>현장 식대장부</h1>
+    <p>장부 화면으로 이동하고 있습니다.<br>자동으로 열리지 않으면 아래 버튼을 눌러주세요.</p>
+    <a id="open-ledger" href="https://script.google.com/macros/s/AKfycbyJevvq_W2oLGnZjuQoc_6jEYTuLzeyKnt_8zzhDI0nHKYGuWvF-OmQzRBpiHNLF1Q/exec" rel="noreferrer">식대장부 열기</a>
+    <small>식수 등록 · 장부 조회 · 월말 정산</small>
+  </main>
+  <script>
+    const target=new URL(document.getElementById('open-ledger').href);
+    const restaurant=new URLSearchParams(location.search).get('r')||new URLSearchParams(location.hash.slice(1)).get('r');
+    if(restaurant&&/^[a-f0-9]{48}$/.test(restaurant))target.searchParams.set('r',restaurant);
+    document.getElementById('open-ledger').href=target.href;
+    if(location.protocol==='https:')location.replace(target.href);
+  </script>
+</body>
+</html>
