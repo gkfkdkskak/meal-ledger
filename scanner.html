@@ -29,6 +29,16 @@
     <input id="number" inputmode="numeric" pattern="[0-9]{15}" required maxlength="15" autocomplete="off">
     <button>등록</button>
   </form>
+  <section aria-labelledby="counts-title">
+    <h2 id="counts-title">식수 인원 조회</h2>
+    <form id="counts-form">
+      <label for="counts-date">날짜</label>
+      <input id="counts-date" type="date" required disabled>
+      <button id="counts-button" disabled>조회</button>
+    </form>
+    <p id="counts-total" role="status"></p>
+    <ul id="counts-list"></ul>
+  </section>
 </main>
 <script>
 'use strict';
@@ -38,6 +48,7 @@ const app=params.get('app')||'', restaurantToken=params.get('r')||'';
 const meal=$('meal'), video=$('video'), camera=$('camera');
 let busy=false, pending=null, audio=null, stream=null, lastCode='', lastSeen=0;
 const retryIds=new Map();
+let countsRequest=0, mealOptions=[];
 function status(message,kind=''){ $('result').textContent=message;$('result').dataset.kind=kind; }
 function updateButtons(){
   meal.disabled=busy||!!pending||!meal.options.length;
@@ -70,6 +81,31 @@ async function request(path,body){
   if(result.error)throw Error(result.error);
   return result;
 }
+function renderCounts(date,counts){
+  const grouped=new Map(mealOptions.map(item=>[item.id,{name:item.name,count:0}]));
+  counts.forEach(item=>grouped.set(item.id,item));
+  const rows=[...grouped.values()].map(item=>{
+    const row=document.createElement('li');
+    row.textContent=item.name+' · '+item.count+'식';
+    return row;
+  });
+  $('counts-list').replaceChildren(...rows);
+  const total=counts.reduce((sum,item)=>sum+item.count,0);
+  $('counts-total').textContent=date+' · 합계 '+total+'식';
+}
+$('counts-form').onsubmit=async event=>{
+  event.preventDefault();
+  const date=$('counts-date').value;
+  const callId=++countsRequest;
+  $('counts-total').textContent='조회 중…';
+  $('counts-list').replaceChildren();
+  try{
+    const data=await request('/api/kiosk-counts',{date});
+    if(callId===countsRequest)renderCounts(date,data.counts);
+  }catch(error){
+    if(callId===countsRequest)$('counts-total').textContent='식수 조회 실패 · '+error.message;
+  }
+};
 async function submit(code,confirmation=''){
   if(busy||!meal.value||(pending&&!confirmation))return;
   busy=true;updateButtons();status('등록 중…');
@@ -86,6 +122,10 @@ async function submit(code,confirmation=''){
       status(label+' · 이미 등록됨','duplicate');sound('duplicate');
     }else{
       pending=null;
+      if($('counts-date').value===result.date&&result.counts){
+        countsRequest++;
+        renderCounts(result.date,result.counts);
+      }
       status(label+' · '+(result.status==='extra'?'추가 등록 완료':'등록 완료')+(result.warning?' · '+result.warning:''));
       sound('saved');
     }
@@ -151,6 +191,10 @@ window.addEventListener('pagehide',stopCamera);
   try{
     const data=await request('/api/kiosk',{});
     $('title').textContent=data.restaurant+' · 식수 등록';
+    mealOptions=data.meals;
+    $('counts-date').value=data.today;
+    $('counts-date').disabled=$('counts-button').disabled=false;
+    renderCounts(data.today,data.counts);
     data.meals.forEach(item=>{
       const option=document.createElement('option');option.value=item.id;option.textContent=item.name;meal.append(option);
     });
