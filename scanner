@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>식당 바코드 식수 등록</title>
+<style>
+  body{font:1.1rem system-ui,sans-serif;background:#eff5f1;color:#163e33;margin:0}
+  main{max-width:32rem;margin:auto;padding:1rem}
+  h1{font-size:1.6rem;margin:.5rem 0 1rem}
+  select,button,input{font:inherit;padding:.65rem;border-radius:.5rem;border:1px solid #85a99d}
+  button{background:#17654d;color:white;font-weight:700}
+  button:disabled{opacity:.5}video{width:100%;max-height:48vh;background:#122b24;transform:scaleX(-1);object-fit:contain;border-radius:.8rem;margin-top:.75rem}
+  #result{font-size:1.25rem;font-weight:700;min-height:2.5rem;margin:.6rem 0}
+  #result[data-kind="duplicate"],#result[data-kind="error"]{color:#8b390b}
+  form{margin-top:.8rem}input{max-width:65%}[hidden]{display:none!important}
+</style>
+<main>
+  <h1 id="title">식당 바코드 식수 등록</h1>
+  <label for="meal">식사 구분</label>
+  <select id="meal" disabled></select>
+  <button id="camera" disabled>전면 카메라 켜기</button>
+  <video id="video" playsinline muted hidden></video>
+  <p id="result" role="status" aria-live="polite">식당 정보 확인 중</p>
+  <button id="extra" hidden>추가 등록</button>
+  <button id="skip" hidden>다음 직원</button>
+  <form id="manual" hidden>
+    <label for="number">바코드 번호 직접 입력</label><br>
+    <input id="number" inputmode="numeric" pattern="[0-9]{15}" required maxlength="15" autocomplete="off">
+    <button>등록</button>
+  </form>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const params=new URLSearchParams(location.hash.slice(1));
+const app=params.get('app')||'', restaurantToken=params.get('r')||'';
+const meal=$('meal'), video=$('video'), camera=$('camera');
+let busy=false, pending=null, audio=null, stream=null, lastCode='', lastSeen=0;
+const retryIds=new Map();
+function status(message,kind=''){ $('result').textContent=message;$('result').dataset.kind=kind; }
+function updateButtons(){
+  meal.disabled=busy||!!pending||!meal.options.length;
+  $('extra').hidden=$('skip').hidden=!pending;
+  $('extra').disabled=$('skip').disabled=busy;
+}
+async function initSound(){
+  const Audio=window.AudioContext||window.webkitAudioContext;
+  if(!Audio)return;
+  try{audio=audio||new Audio();await audio.resume();}catch{}
+}
+function sound(kind){
+  if(!audio||audio.state!=='running')return;
+  const tones=kind==='saved'?[680,920]:kind==='duplicate'?[390,390]:[235];
+  tones.forEach((frequency,index)=>{
+    const oscillator=audio.createOscillator(), gain=audio.createGain();
+    const start=audio.currentTime+index*.13;
+    oscillator.frequency.value=frequency;
+    gain.gain.setValueAtTime(.16,start);
+    gain.gain.exponentialRampToValueAtTime(.001,start+.11);
+    oscillator.connect(gain).connect(audio.destination);
+    oscillator.start(start);oscillator.stop(start+.12);
+  });
+}
+async function request(path,body){
+  const response=await fetch(app,{method:'POST',credentials:'omit',headers:{'Content-Type':'text/plain;charset=UTF-8'},
+    body:JSON.stringify({path,restaurantToken,body})});
+  if(!response.ok)throw Error('식대장부 서버에 연결하지 못했습니다.');
+  const result=await response.json();
+  if(result.error)throw Error(result.error);
+  return result;
+}
+async function submit(code,confirmation=''){
+  if(busy||!meal.value||(pending&&!confirmation))return;
+  busy=true;updateButtons();status('등록 중…');
+  const signature=JSON.stringify([meal.value,code,confirmation]);
+  const requestId=retryIds.get(signature)||crypto.randomUUID();
+  retryIds.set(signature,requestId);
+  if(retryIds.size>24)retryIds.delete(retryIds.keys().next().value);
+  try{
+    const result=await request('/api/scan',{mealId:meal.value,code,confirmation,requestId});
+    retryIds.delete(signature);
+    const label=result.name+' · '+result.meal;
+    if(result.status==='duplicate'){
+      pending={code,confirmation:result.confirmation};
+      status(label+' · 이미 등록됨','duplicate');sound('duplicate');
+    }else{
+      pending=null;
+      status(label+' · '+(result.status==='extra'?'추가 등록 완료':'등록 완료')+(result.warning?' · '+result.warning:''));
+      sound('saved');
+    }
+  }catch(error){
+    status('등록 확인 실패 · '+error.message,'error');sound('error');
+  }finally{busy=false;updateButtons();}
+}
+async function readFrame(detector,activeStream){
+  if(stream!==activeStream)return;
+  try{
+    if(video.readyState>=2){
+      const codes=await detector.detect(video);
+      const found=codes.find(code=>/^\d{15}$/.test(code.rawValue));
+      if(found){
+        const now=Date.now(), value=found.rawValue;
+        if(!busy&&!pending&&(value!==lastCode||now-lastSeen>950)){
+          lastCode=value;submit(value);
+        }
+        if(value===lastCode)lastSeen=now;
+      }
+    }
+  }catch(error){stopCamera();status('카메라 인식 오류 · '+error.message,'error');}
+  if(stream===activeStream)setTimeout(()=>readFrame(detector,activeStream),120);
+}
+function stopCamera(){
+  stream?.getTracks().forEach(track=>track.stop());
+  stream=null;video.srcObject=null;video.hidden=true;
+  camera.textContent='전면 카메라 켜기';
+}
+camera.onclick=async()=>{
+  if(stream){stopCamera();return;}
+  camera.disabled=true;
+  try{
+    await initSound();
+    const Detector=window.BarcodeDetector;
+    const formats=Detector?await Detector.getSupportedFormats():[];
+    const supported=formats.filter(format=>['code_128','code_39','code_93','itf','codabar','qr_code','data_matrix'].includes(format));
+    if(!supported.length)throw Error('이 브라우저에서는 카메라 바코드 인식을 지원하지 않습니다. 공용폰의 Chrome에서 열어 주세요.');
+    const detector=new Detector({formats:supported});
+    stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{exact:'user'},width:{ideal:1280}}});
+    video.srcObject=stream;video.hidden=false;
+    await video.play();
+    camera.textContent='카메라 끄기';status('카메라 앞에 직원 바코드를 보여 주세요.');
+    readFrame(detector,stream);
+  }catch(error){stopCamera();status(error.message,'error');}
+  finally{camera.disabled=false;}
+};
+$('extra').onclick=()=>{if(pending)submit(pending.code,pending.confirmation);};
+$('skip').onclick=()=>{
+  pending=null;updateButtons();
+  status('다음 직원의 바코드를 보여 주세요.');
+};
+$('manual').onsubmit=async event=>{
+  event.preventDefault();
+  const input=$('number');
+  await initSound();await submit(input.value);input.value='';
+};
+window.addEventListener('pagehide',stopCamera);
+(async()=>{
+  if(!/^https:\/\/script\.google\.com\/macros\/s\/[a-zA-Z0-9_-]+\/exec$/.test(app)||!(/^[a-f0-9]{48}$/.test(restaurantToken))){
+    status('식대장부에서 해당 식당의 공용폰 스캔 링크를 열어 주세요.','error');return;
+  }
+  try{
+    const data=await request('/api/kiosk',{});
+    $('title').textContent=data.restaurant+' · 식수 등록';
+    data.meals.forEach(item=>{
+      const option=document.createElement('option');option.value=item.id;option.textContent=item.name;meal.append(option);
+    });
+    updateButtons();
+    camera.disabled=$('manual').hidden=!data.meals.length;
+    status(data.meals.length?'끼니를 선택하고 전면 카메라를 켜 주세요.':'이 식당에 등록된 식사 단가가 없습니다.');
+  }catch(error){status('식당을 불러오지 못했습니다 · '+error.message,'error');}
+})();
+</script>
+</html>
